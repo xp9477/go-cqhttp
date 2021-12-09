@@ -20,6 +20,9 @@ import (
 	"github.com/Mrs4s/go-cqhttp/internal/cache"
 )
 
+var PrivateMessageEventCallback func(uid int64, msg string)
+var GroupMessageEventCallback func(gid int64, uid int64, msg string)
+
 // ToFormattedMessage 将给定[]message.IMessageElement转换为通过coolq.SetMessageFormat所定义的消息上报格式
 func ToFormattedMessage(e []message.IMessageElement, source MessageSource, isRaw ...bool) (r interface{}) {
 	if base.PostFormat == "string" {
@@ -39,6 +42,7 @@ func (bot *CQBot) privateMessageEvent(c *client.QQClient, m *message.PrivateMess
 	cqm := ToStringMessage(m.Elements, source, true)
 	id := bot.InsertPrivateMessage(m)
 	log.Infof("收到好友 %v(%v) 的消息: %v (%v)", m.Sender.DisplayName(), m.Sender.Uin, cqm, id)
+	PrivateMessageEventCallback(m.Sender.Uin, cqm)
 	fm := global.MSG{
 		"post_type": func() string {
 			if m.Sender.Uin == bot.Client.Uin {
@@ -96,6 +100,7 @@ func (bot *CQBot) groupMessageEvent(c *client.QQClient, m *message.GroupMessage)
 	cqm := ToStringMessage(m.Elements, source, true)
 	id := bot.InsertGroupMessage(m)
 	log.Infof("收到群 %v(%v) 内 %v(%v) 的消息: %v (%v)", m.GroupName, m.GroupCode, m.Sender.DisplayName(), m.Sender.Uin, cqm, id)
+	GroupMessageEventCallback(m.GroupCode, m.Sender.Uin, cqm)
 	gm := bot.formatGroupMessage(m)
 	if gm == nil {
 		return
@@ -119,6 +124,7 @@ func (bot *CQBot) tempMessageEvent(c *client.QQClient, e *client.TempMessageEven
 	// 		id = bot.InsertTempMessage(m.Sender.Uin, m)
 	// }
 	log.Infof("收到来自群 %v(%v) 内 %v(%v) 的临时会话消息: %v", m.GroupName, m.GroupCode, m.Sender.DisplayName(), m.Sender.Uin, cqm)
+	PrivateMessageEventCallback(m.Sender.Uin, cqm)
 	tm := global.MSG{
 		"post_type":    "message",
 		"message_type": "private",
