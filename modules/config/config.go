@@ -55,7 +55,8 @@ type Config struct {
 		RemoveReplyAt       bool   `yaml:"remove-reply-at"`
 		ExtraReplyData      bool   `yaml:"extra-reply-data"`
 		SkipMimeScan        bool   `yaml:"skip-mime-scan"`
-		ConvertWebpImage	bool   `yaml:"convert-webp-image"`
+		ConvertWebpImage    bool   `yaml:"convert-webp-image"`
+		HTTPTimeout         int    `yaml:"http-timeout"`
 	} `yaml:"message"`
 
 	Output struct {
