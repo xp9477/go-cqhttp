@@ -1,17 +1,15 @@
 //go:build !windows
-// +build !windows
 
 package selfupdate
 
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"errors"
 	"io"
 	"net/http"
-
-	"github.com/klauspost/compress/gzip"
 )
 
 // update go-cqhttp自我更新

@@ -2,9 +2,12 @@ package server
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -22,6 +25,7 @@ import (
 	"github.com/Mrs4s/go-cqhttp/modules/api"
 	"github.com/Mrs4s/go-cqhttp/modules/config"
 	"github.com/Mrs4s/go-cqhttp/modules/filter"
+	"github.com/Mrs4s/go-cqhttp/pkg/onebot"
 )
 
 type webSocketServer struct {
@@ -75,9 +79,7 @@ var upgrader = websocket.Upgrader{
 const wsDefault = `  # 正向WS设置
   - ws:
       # 正向WS服务器监听地址
-      host: 127.0.0.1
-      # 正向WS服务器监听端口
-      port: 6700
+      address: 0.0.0.0:8080
       middlewares:
         <<: *default # 引用默认中间件
 `
@@ -100,6 +102,7 @@ const wsReverseDefault = `  # 反向WS设置
 // WebsocketServer 正向WS相关配置
 type WebsocketServer struct {
 	Disabled bool   `yaml:"disabled"`
+	Address  string `yaml:"address"`
 	Host     string `yaml:"host"`
 	Port     int    `yaml:"port"`
 
@@ -139,6 +142,17 @@ func runWSServer(b *coolq.CQBot, node yaml.Node) {
 		return
 	}
 
+	network, address := "tcp", conf.Address
+	if conf.Address == "" && (conf.Host != "" || conf.Port != 0) {
+		log.Warn("正向 Websocket 使用了过时的配置格式，请更新配置文件")
+		address = fmt.Sprintf("%s:%d", conf.Host, conf.Port)
+	} else {
+		uri, err := url.Parse(conf.Address)
+		if err == nil && uri.Scheme != "" {
+			network = uri.Scheme
+			address = uri.Host + uri.Path
+		}
+	}
 	s := &webSocketServer{
 		bot:    b,
 		conf:   &conf,
@@ -146,7 +160,6 @@ func runWSServer(b *coolq.CQBot, node yaml.Node) {
 		filter: conf.Filter,
 	}
 	filter.Add(s.filter)
-	addr := fmt.Sprintf("%s:%d", conf.Host, conf.Port)
 	s.handshake = fmt.Sprintf(`{"_post_method":2,"meta_event_type":"lifecycle","post_type":"meta_event","self_id":%d,"sub_type":"connect","time":%d}`,
 		b.Client.Uin, time.Now().Unix())
 	b.OnEventPush(s.onBotPushEvent)
@@ -154,8 +167,12 @@ func runWSServer(b *coolq.CQBot, node yaml.Node) {
 	mux.HandleFunc("/event", s.event)
 	mux.HandleFunc("/api", s.api)
 	mux.HandleFunc("/", s.any)
-	log.Infof("CQ WebSocket 服务器已启动: %v", addr)
-	log.Fatal(http.ListenAndServe(addr, &mux))
+	listener, err := net.Listen(network, address)
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Infof("CQ WebSocket 服务器已启动: %v", listener.Addr())
+	log.Fatal(http.Serve(listener, &mux))
 }
 
 // runWSClient 运行一个反向向WS client
@@ -175,9 +192,13 @@ func runWSClient(b *coolq.CQBot, node yaml.Node) {
 		filter: conf.Filter,
 	}
 	filter.Add(c.filter)
+
 	if conf.ReconnectInterval != 0 {
 		c.reconnectInterval = time.Duration(conf.ReconnectInterval) * time.Millisecond
+	} else {
+		c.reconnectInterval = time.Second * 5
 	}
+
 	if conf.RateLimit.Enabled {
 		c.limiter = rateLimit(conf.RateLimit.Frequency, conf.RateLimit.Bucket)
 	}
@@ -196,8 +217,26 @@ func runWSClient(b *coolq.CQBot, node yaml.Node) {
 	}
 }
 
-func (c *websocketClient) connect(typ, url string, conptr **wsConn) {
-	log.Infof("开始尝试连接到反向WebSocket %s服务器: %v", typ, url)
+func resolveURI(addr string) (network, address string) {
+	network, address = "tcp", addr
+	uri, err := url.Parse(addr)
+	if err == nil && uri.Scheme != "" {
+		scheme, ext, _ := strings.Cut(uri.Scheme, "+")
+		if ext != "" {
+			network = ext
+			uri.Scheme = scheme // remove `+unix`/`+tcp4`
+			if ext == "unix" {
+				uri.Host, uri.Path, _ = strings.Cut(uri.Path, ":")
+				uri.Host = base64.StdEncoding.EncodeToString([]byte(uri.Host))
+			}
+			address = uri.String()
+		}
+	}
+	return
+}
+
+func (c *websocketClient) connect(typ, addr string, conptr **wsConn) {
+	log.Infof("开始尝试连接到反向WebSocket %s服务器: %v", typ, addr)
 	header := http.Header{
 		"X-Client-Role": []string{typ},
 		"X-Self-ID":     []string{strconv.FormatInt(c.bot.Client.Uin, 10)},
@@ -206,12 +245,30 @@ func (c *websocketClient) connect(typ, url string, conptr **wsConn) {
 	if c.token != "" {
 		header["Authorization"] = []string{"Token " + c.token}
 	}
-	conn, _, err := websocket.DefaultDialer.Dial(url, header) // nolint
+
+	network, address := resolveURI(addr)
+	dialer := websocket.Dialer{
+		NetDial: func(_, addr string) (net.Conn, error) {
+			if network == "unix" {
+				host, _, err := net.SplitHostPort(addr)
+				if err != nil {
+					host = addr
+				}
+				filepath, err := base64.RawURLEncoding.DecodeString(host)
+				if err == nil {
+					addr = string(filepath)
+				}
+			}
+			return net.Dial(network, addr) // support unix socket transport
+		},
+	}
+
+	conn, _, err := dialer.Dial(address, header) // nolint
 	if err != nil {
-		log.Warnf("连接到反向WebSocket %s服务器 %v 时出现错误: %v", typ, url, err)
+		log.Warnf("连接到反向WebSocket %s服务器 %v 时出现错误: %v", typ, addr, err)
 		if c.reconnectInterval != 0 {
 			time.Sleep(c.reconnectInterval)
-			c.connect(typ, url, conptr)
+			c.connect(typ, addr, conptr)
 		}
 		return
 	}
@@ -225,7 +282,7 @@ func (c *websocketClient) connect(typ, url string, conptr **wsConn) {
 		}
 	}
 
-	log.Infof("已连接到反向WebSocket %s服务器 %v", typ, url)
+	log.Infof("已连接到反向WebSocket %s服务器 %v", typ, addr)
 
 	var wrappedConn *wsConn
 	if conptr != nil && *conptr != nil {
@@ -244,7 +301,7 @@ func (c *websocketClient) connect(typ, url string, conptr **wsConn) {
 	}
 
 	if typ != "Event" {
-		go c.listenAPI(typ, url, wrappedConn)
+		go c.listenAPI(typ, addr, wrappedConn)
 	}
 }
 
@@ -411,14 +468,16 @@ func (s *webSocketServer) listenAPI(c *wsConn) {
 func (c *wsConn) handleRequest(_ *coolq.CQBot, payload []byte) {
 	defer func() {
 		if err := recover(); err != nil {
-			log.Printf("处置WS命令时发生无法恢复的异常：%v\n%s", err, debug.Stack())
+			log.Errorf("处置WS命令时发生无法恢复的异常：%v\n%s", err, debug.Stack())
 			_ = c.Close()
 		}
 	}()
+
 	j := gjson.Parse(utils.B2S(payload))
 	t := strings.TrimSuffix(j.Get("action").Str, "_async")
-	log.Debugf("WS接收到API调用: %v 参数: %v", t, j.Get("params").Raw)
-	ret := c.apiCaller.Call(t, j.Get("params"))
+	params := j.Get("params")
+	log.Debugf("WS接收到API调用: %v 参数: %v", t, params.Raw)
+	ret := c.apiCaller.Call(t, onebot.V11, params)
 	if j.Get("echo").Exists() {
 		ret["echo"] = j.Get("echo").Value()
 	}
@@ -426,7 +485,11 @@ func (c *wsConn) handleRequest(_ *coolq.CQBot, payload []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_ = c.conn.SetWriteDeadline(time.Now().Add(time.Second * 15))
-	writer, _ := c.conn.NextWriter(websocket.TextMessage)
+	writer, err := c.conn.NextWriter(websocket.TextMessage)
+	if err != nil {
+		log.Errorf("无法响应API调用(连接已断开?): %v", err)
+		return
+	}
 	_ = json.NewEncoder(writer).Encode(ret)
 	_ = writer.Close()
 }

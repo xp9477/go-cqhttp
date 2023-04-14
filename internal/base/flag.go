@@ -5,13 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
-	"path"
-	"path/filepath"
-	"strings"
 	"time"
 
-	"github.com/Mrs4s/go-cqhttp/global"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 
@@ -28,19 +23,23 @@ var (
 
 // config file flags
 var (
-	Debug               bool // 是否开启 debug 模式
-	RemoveReplyAt       bool // 是否删除reply后的at
-	ExtraReplyData      bool // 是否上报额外reply信息
-	IgnoreInvalidCQCode bool // 是否忽略无效CQ码
-	SplitURL            bool // 是否分割URL
-	ForceFragmented     bool // 是否启用强制分片
-	SkipMimeScan        bool // 是否跳过Mime扫描
-	ReportSelfMessage   bool // 是否上报自身消息
-	UseSSOAddress       bool // 是否使用服务器下发的新地址进行重连
-	LogForceNew         bool // 是否在每次启动时强制创建全新的文件储存日志
-	LogColorful         bool // 是否启用日志颜色
-	FastStart           bool // 是否为快速启动
-	AllowTempSession    bool // 是否允许发送临时会话信息
+	Debug               bool   // 是否开启 debug 模式
+	RemoveReplyAt       bool   // 是否删除reply后的at
+	ExtraReplyData      bool   // 是否上报额外reply信息
+	IgnoreInvalidCQCode bool   // 是否忽略无效CQ码
+	SplitURL            bool   // 是否分割URL
+	ForceFragmented     bool   // 是否启用强制分片
+	SkipMimeScan        bool   // 是否跳过Mime扫描
+	ConvertWebpImage    bool   // 是否转换Webp图片
+	ReportSelfMessage   bool   // 是否上报自身消息
+	UseSSOAddress       bool   // 是否使用服务器下发的新地址进行重连
+	LogForceNew         bool   // 是否在每次启动时强制创建全新的文件储存日志
+	LogColorful         bool   // 是否启用日志颜色
+	FastStart           bool   // 是否为快速启动
+	AllowTempSession    bool   // 是否允许发送临时会话信息
+	UpdateProtocol      bool   // 是否更新协议
+	SignServerOverwrite string // 使用特定的服务器进行签名
+	HTTPTimeout         int
 
 	PostFormat        string                 // 上报格式 string or array
 	Proxy             string                 // 存储 proxy_rewrite,用于设置代理
@@ -58,14 +57,14 @@ var (
 
 // Parse parse flags
 func Parse() {
-	wd, _ := os.Getwd()
-	dc := path.Join(wd, "config.yml")
-	flag.StringVar(&LittleC, "c", dc, "configuration filename")
+	flag.StringVar(&LittleC, "c", "config.yml", "configuration filename")
 	flag.BoolVar(&LittleD, "d", false, "running as a daemon")
 	flag.BoolVar(&LittleH, "h", false, "this Help")
 	flag.StringVar(&LittleWD, "w", "", "cover the working directory")
 	d := flag.Bool("D", false, "debug mode")
 	flag.BoolVar(&FastStart, "faststart", false, "skip waiting 5 seconds")
+	flag.BoolVar(&UpdateProtocol, "update-protocol", false, "update protocol")
+	flag.StringVar(&SignServerOverwrite, "sign-server", "", "use special server to sign tlv")
 	flag.Parse()
 
 	if *d {
@@ -86,9 +85,11 @@ func Init() {
 		ExtraReplyData = conf.Message.ExtraReplyData
 		ForceFragmented = conf.Message.ForceFragment
 		SkipMimeScan = conf.Message.SkipMimeScan
+		ConvertWebpImage = conf.Message.ConvertWebpImage
 		ReportSelfMessage = conf.Message.ReportSelfMessage
 		UseSSOAddress = conf.Account.UseSSOAddress
 		AllowTempSession = conf.Account.AllowTempSession
+		HTTPTimeout = conf.Message.HTTPTimeout
 	}
 	{ // others
 		Proxy = conf.Message.ProxyRewrite
@@ -126,32 +127,5 @@ Options:
 `, Version)
 
 	flag.PrintDefaults()
-	os.Exit(0)
-}
-
-// ResetWorkingDir 重设工作路径
-func ResetWorkingDir() {
-	wd := LittleWD
-	args := make([]string, 0, len(os.Args))
-	for i := 1; i < len(os.Args); i++ {
-		if os.Args[i] == "-w" {
-			i++ // skip value field
-		} else if !strings.HasPrefix(os.Args[i], "-w") {
-			args = append(args, os.Args[i])
-		}
-	}
-	p, _ := filepath.Abs(os.Args[0])
-	if !global.PathExists(p) {
-		log.Fatalf("重置工作目录时出现错误: 无法找到路径 %v", p)
-	}
-	proc := exec.Command(p, args...)
-	proc.Stdin = os.Stdin
-	proc.Stdout = os.Stdout
-	proc.Stderr = os.Stderr
-	proc.Dir = wd
-	err := proc.Run()
-	if err != nil {
-		panic(err)
-	}
 	os.Exit(0)
 }
