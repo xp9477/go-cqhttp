@@ -84,6 +84,7 @@ func (bot *CQBot) privateMessageEvent(_ *client.QQClient, m *message.PrivateMess
 	cqm := toStringMessage(m.Elements, source)
 	id := bot.InsertPrivateMessage(m)
 	log.Infof("收到好友 %v(%v) 的消息: %v (%v)", m.Sender.DisplayName(), m.Sender.Uin, cqm, id)
+	PrivateMessageEventCallback(m.Sender.Uin, cqm)
 	typ := "message/private/friend"
 	if m.Sender.Uin == bot.Client.Uin {
 		typ = "message_sent/private/friend"

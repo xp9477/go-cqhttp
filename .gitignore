@@ -4,7 +4,7 @@ vendor/
 config.hjson
 config.yml
 session.token
-device.json
+device1.json
 data/
 logs/
 internal/btree/*.lock
